@@ -1,13 +1,31 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import inspect
 from backend.api.v1 import auth, records, analytics, users
 from backend.core.config import settings
 from backend.db.session import engine, Base
 from backend.core.errors import AppError, app_error_handler
 import traceback
 
+
+def ensure_user_permission_columns() -> None:
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        existing_columns = {column["name"] for column in inspector.get_columns("users")}
+
+        if "is_promoted_admin" not in existing_columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE users ADD COLUMN is_promoted_admin BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+        if "permission_overrides" not in existing_columns:
+            conn.exec_driver_sql("ALTER TABLE users ADD COLUMN permission_overrides VARCHAR")
+        if "permission_expires_at" not in existing_columns:
+            dt_type = "TIMESTAMP" if engine.dialect.name == "postgresql" else "DATETIME"
+            conn.exec_driver_sql(f"ALTER TABLE users ADD COLUMN permission_expires_at {dt_type}")
+
 # Create tables (SQLite)
 Base.metadata.create_all(bind=engine)
+ensure_user_permission_columns()
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
