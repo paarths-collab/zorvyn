@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import case, func
 from sqlalchemy.exc import SQLAlchemyError
+from backend.db.session import engine
 from backend.models.record import FinancialRecord, RecordType
 from backend.schemas.analytics import SummaryResponse, CategoryBreakdown, TrendPoint, RecentTransaction
 from backend.core.errors import AppError
@@ -46,15 +47,20 @@ def get_category_breakdown(db: Session) -> List[CategoryBreakdown]:
 def get_monthly_trends(db: Session) -> List[TrendPoint]:
     """
     Returns monthly aggregation for the last 12 months.
-    SQLite specific strftime for grouping.
+    Uses Postgres TO_CHAR or SQLite strftime based on the active DB dialect.
     """
-    # Group by YYYY-MM
     try:
+        # Resolve the correct date formatting function based on the database engine
+        if getattr(engine, "name", "sqlite") == "postgresql":
+            month_expr = func.to_char(FinancialRecord.date, 'YYYY-MM')
+        else:
+            month_expr = func.strftime("%Y-%m", FinancialRecord.date)
+
         results = _active_records_query(db).with_entities(
-            func.strftime("%Y-%m", FinancialRecord.date).label("month"),
+            month_expr.label("month"),
             func.sum(case((FinancialRecord.type == RecordType.INCOME, FinancialRecord.amount), else_=0)).label("income"),
             func.sum(case((FinancialRecord.type == RecordType.EXPENSE, FinancialRecord.amount), else_=0)).label("expense")
-        ).group_by("month").order_by("month").limit(12).all()
+        ).group_by(month_expr).order_by(month_expr).limit(12).all()
 
         return [
             TrendPoint(period=row[0], income=row[1] or 0.0, expense=row[2] or 0.0)
