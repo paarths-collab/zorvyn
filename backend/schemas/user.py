@@ -1,5 +1,6 @@
 from pydantic import BaseModel, EmailStr, ConfigDict
 from typing import Optional
+from datetime import datetime
 from backend.models.user import UserRole
 
 class UserBase(BaseModel):
@@ -20,9 +21,14 @@ class UserUpdate(BaseModel):
     password: Optional[str] = None
     role: Optional[UserRole] = None
     is_active: Optional[bool] = None
+    permission_overrides: Optional[list[str]] = None
+    permission_expires_at: Optional[datetime] = None
 
 class UserResponse(UserBase):
     id: int
+    is_promoted_admin: bool = False
+    permission_overrides: Optional[str] = None
+    permission_expires_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
 class Token(BaseModel):

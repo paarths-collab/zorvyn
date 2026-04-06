@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { apiFetch, CAPS, parseJwt } from "./lib/api";
+import { apiFetch, CAPS, capabilityFromPermissions, parseJwt } from "./lib/api";
 import { RoleBadge } from "./components/Badge";
 import AuthScreen    from "./components/AuthScreen";
 import DashboardView from "./components/DashboardView";
@@ -18,6 +18,8 @@ export default function HomePage() {
   /* ── Auth state ──────────────────────────────────── */
   const [token, setToken] = useState("");
   const [user,  setUser]  = useState(null);
+  const [effectivePermissions, setEffectivePermissions] = useState([]);
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
 
   /* ── Dashboard data ──────────────────────────────── */
   const [summary,    setSummary]    = useState(null);
@@ -32,17 +34,43 @@ export default function HomePage() {
   const [error,      setError]      = useState("");
 
   /* ── Derived capabilities from role ──────────────── */
-  const capability = useMemo(() => CAPS[user?.role] || CAPS.viewer, [user]);
+  const capability = useMemo(
+    () => capabilityFromPermissions(effectivePermissions, user?.role),
+    [effectivePermissions, user]
+  );
+
+  const loadCurrentUser = useCallback(async (tk, fallbackDecoded = null) => {
+    if (!tk) {
+      setPermissionsLoaded(false);
+      return;
+    }
+    try {
+      const me = await apiFetch("/auth/me", tk);
+      setUser({ id: me.id, role: me.role, fullName: me.full_name });
+      setEffectivePermissions(Array.isArray(me.effective_permissions) ? me.effective_permissions : []);
+    } catch {
+      if (fallbackDecoded?.role && fallbackDecoded?.user_id) {
+        setUser({ id: fallbackDecoded.user_id, role: fallbackDecoded.role, fullName: fallbackDecoded.full_name });
+      }
+      setEffectivePermissions([]);
+    } finally {
+      setPermissionsLoaded(true);
+    }
+  }, []);
 
   /* ── Restore session on mount ────────────────────── */
   useEffect(() => {
     const t = window.localStorage.getItem("token");
-    if (!t) return;
+    if (!t) {
+      setPermissionsLoaded(false);
+      return;
+    }
     const d = parseJwt(t);
     if (!d?.role || !d?.user_id) { window.localStorage.removeItem("token"); return; }
+    setPermissionsLoaded(false);
     setToken(t);
-    setUser({ id: d.user_id, role: d.role, fullName: d.full_name });
-  }, []);
+    loadCurrentUser(t, d);
+  }, [loadCurrentUser]);
 
   /* ── Load /analytics/dashboard when token is set ─── */
   const loadDashboard = useCallback(async (tk) => {
@@ -58,18 +86,32 @@ export default function HomePage() {
     finally    { setLoading(false); }
   }, []);
 
-  useEffect(() => { if (token) loadDashboard(token); }, [token, loadDashboard]);
+  useEffect(() => {
+    if (!token || !permissionsLoaded) return;
+    if (capability.canViewAnalytics === false) {
+      setSummary(null);
+      setCategories([]);
+      setTrends([]);
+      setRecent([]);
+      setError("");
+      return;
+    }
+    loadDashboard(token);
+  }, [token, permissionsLoaded, loadDashboard, capability.canViewAnalytics]);
 
   /* ── Handlers ────────────────────────────────────── */
   function handleLogin(newToken, decoded) {
     window.localStorage.setItem("token", newToken);
+    setPermissionsLoaded(false);
     setToken(newToken);
-    setUser({ id: decoded.user_id, role: decoded.role, fullName: decoded.full_name });
+    loadCurrentUser(newToken, decoded);
   }
 
   function logout() {
     window.localStorage.removeItem("token");
     setToken(""); setUser(null);
+    setEffectivePermissions([]);
+    setPermissionsLoaded(false);
     setSummary(null); setCategories([]); setTrends([]); setRecent([]);
     setActiveTab("dashboard"); setError("");
   }
@@ -95,7 +137,10 @@ export default function HomePage() {
         <CreateModal
           token={token}
           onClose={() => setShowCreate(false)}
-          onSuccess={() => { setShowCreate(false); loadDashboard(token); }}
+          onSuccess={() => {
+            setShowCreate(false);
+            if (capability.canViewAnalytics) loadDashboard(token);
+          }}
         />
       )}
 
@@ -196,13 +241,19 @@ export default function HomePage() {
         {/* ── View Switcher ────────────────────────────── */}
         <div style={{ marginTop: 20 }}>
           {activeTab === "dashboard" && (
-            <DashboardView
-              summary={summary}
-              categories={categories}
-              trends={trends}
-              recent={recent}
-              loading={loading}
-            />
+            capability.canViewAnalytics ? (
+              <DashboardView
+                summary={summary}
+                categories={categories}
+                trends={trends}
+                recent={recent}
+                loading={loading}
+              />
+            ) : (
+              <div className="panel" style={{ textAlign: "center", padding: "32px 20px", color: "var(--muted)" }}>
+                You do not have permission to view analytics.
+              </div>
+            )
           )}
 
           {activeTab === "records" && (

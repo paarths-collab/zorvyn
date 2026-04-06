@@ -50,10 +50,22 @@ function isProtectedPath(path) {
 
 /* ─── Role Capabilities ─────────────────────────────── */
 export const CAPS = {
-  viewer:  { canCreate: false, canEdit: false, canDelete: false, canManageUsers: false },
-  analyst: { canCreate: true,  canEdit: false, canDelete: false, canManageUsers: false },
-  admin:   { canCreate: true,  canEdit: true,  canDelete: true,  canManageUsers: true  },
+  viewer:  { canCreate: false, canEdit: false, canDelete: false, canManageUsers: false, canViewAnalytics: true },
+  analyst: { canCreate: true,  canEdit: false, canDelete: false, canManageUsers: false, canViewAnalytics: true },
+  admin:   { canCreate: true,  canEdit: true,  canDelete: true,  canManageUsers: true,  canViewAnalytics: true  },
 };
+
+export function capabilityFromPermissions(effectivePermissions = [], fallbackRole = "viewer") {
+  const perms = new Set((effectivePermissions || []).map((p) => String(p || "").trim()).filter(Boolean));
+  if (perms.size === 0) return CAPS[fallbackRole] || CAPS.viewer;
+  return {
+    canCreate: perms.has("create_records"),
+    canEdit: perms.has("update_records"),
+    canDelete: perms.has("delete_records"),
+    canManageUsers: perms.has("manage_users"),
+    canViewAnalytics: perms.has("view_analytics"),
+  };
+}
 
 /* ─── Category / Payment Constants ─────────────────── */
 export const INCOME_CATS  = ["client_payment", "product_sales", "funding", "subscription"];

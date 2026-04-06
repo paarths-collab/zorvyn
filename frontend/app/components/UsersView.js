@@ -12,12 +12,24 @@ export default function UsersView({ token }) {
   const [users,   setUsers]   = useState([]);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState("");
+  const [success, setSuccess] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newEmail, setNewEmail] = useState("");
   const [newFullName, setNewFullName] = useState("");
   const [newPassword, setNewPassword] = useState("password123");
   const [roleDrafts, setRoleDrafts] = useState({});
+  const [accessDrafts, setAccessDrafts] = useState({});
+  const [expandedAccess, setExpandedAccess] = useState(null);
+
+  const PERMISSION_OPTIONS = [
+    "read_records",
+    "create_records",
+    "update_records",
+    "delete_records",
+    "view_analytics",
+    "manage_users",
+  ];
 
   async function loadUsers(authToken = token) {
     if (!authToken) {
@@ -28,6 +40,25 @@ export default function UsersView({ token }) {
     try {
       const data = await apiFetch("/users/", authToken);
       setUsers(data || []);
+      const nextDrafts = {};
+      (data || []).forEach((u) => {
+        const perms = (u.permission_overrides || "")
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean);
+        let expires_at = "";
+        if (u.permission_expires_at) {
+          const dt = new Date(u.permission_expires_at);
+          if (!Number.isNaN(dt.getTime())) {
+            const local = new Date(dt.getTime() - dt.getTimezoneOffset() * 60000)
+              .toISOString()
+              .slice(0, 16);
+            expires_at = local;
+          }
+        }
+        nextDrafts[u.id] = { perms, expires_at };
+      });
+      setAccessDrafts(nextDrafts);
     } catch (e) { setError(e.message); }
     finally    { setLoading(false); }
   }
@@ -107,6 +138,36 @@ export default function UsersView({ token }) {
     }
   }
 
+  function toggleAccessPermission(userId, permission) {
+    setAccessDrafts((prev) => {
+      const current = prev[userId] || { perms: [], expires_at: "" };
+      const hasPerm = current.perms.includes(permission);
+      const perms = hasPerm
+        ? current.perms.filter((p) => p !== permission)
+        : [...current.perms, permission];
+      return { ...prev, [userId]: { ...current, perms } };
+    });
+  }
+
+  async function handleSaveAccess(user) {
+    const draft = accessDrafts[user.id] || { perms: [], expires_at: "" };
+    const payload = {
+      permission_overrides: draft.perms,
+      permission_expires_at: draft.expires_at ? new Date(draft.expires_at).toISOString() : null,
+    };
+    try {
+      await apiFetch(`/users/${user.id}`, token, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+      setSuccess(`✓ Permissions overridden for ${user.full_name || user.email}`);
+      setTimeout(() => setSuccess(""), 3000);
+      await loadUsers();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
   async function handleDeactivate(id, label) {
     if (!window.confirm(`Deactivate user "${label}"?`)) return;
     try {
@@ -118,6 +179,7 @@ export default function UsersView({ token }) {
   return (
     <div>
       {error && <div className="msg-error">{error}</div>}
+      {success && <div className="msg-success">{success}</div>}
 
       {showCreate && (
         <div className="panel" style={{ marginBottom: 14 }}>
@@ -199,6 +261,9 @@ export default function UsersView({ token }) {
               )}
 
               {users.map((u) => (
+                (() => {
+                  const isProtectedAdmin = u.role === "admin" && !u.is_promoted_admin;
+                  return (
                 <tr key={u.id}>
                   <td style={{ color: "var(--muted)", fontSize: 11 }}>#{u.id}</td>
                   <td style={{ fontWeight: 600 }}>
@@ -212,6 +277,7 @@ export default function UsersView({ token }) {
                         className="input-pill"
                         style={{ maxWidth: 120, height: 32, padding: "0 10px", borderRadius: 10 }}
                         value={roleDrafts[u.id] || u.role}
+                        disabled={isProtectedAdmin}
                         onChange={(e) => setRoleDrafts((prev) => ({ ...prev, [u.id]: e.target.value }))}
                       >
                         <option value="admin">admin</option>
@@ -221,6 +287,7 @@ export default function UsersView({ token }) {
                       <button
                         className="btn btn-soft"
                         style={{ fontSize: 11, padding: "5px 10px" }}
+                        disabled={isProtectedAdmin}
                         onClick={() => handleRoleUpdate(u)}
                       >
                         Save Role
@@ -234,11 +301,28 @@ export default function UsersView({ token }) {
                   </td>
                   <td>
                     {u.is_active ? (
-                      <button className="btn btn-soft" id={`deactivate-user-${u.id}`}
-                        style={{ fontSize: 11, padding: "5px 10px", color: "var(--danger)", borderColor: "rgba(239,68,68,0.3)" }}
-                        onClick={() => handleDeactivate(u.id, u.full_name || u.email)}>
-                        Deactivate
-                      </button>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          {(u.role === "analyst" || (u.role === "admin" && u.is_promoted_admin)) && (
+                            <button className="btn btn-soft"
+                              style={{ fontSize: 11, padding: "5px 10px", width: "fit-content" }}
+                              onClick={() => setExpandedAccess(u.id)}>
+                              Manage Access
+                            </button>
+                          )}
+                          <button className="btn btn-soft" id={`deactivate-user-${u.id}`}
+                            style={{ fontSize: 11, padding: "5px 10px", color: "var(--danger)", borderColor: "rgba(239,68,68,0.3)", width: "fit-content" }}
+                            onClick={() => handleDeactivate(u.id, u.full_name || u.email)}>
+                            Deactivate
+                          </button>
+                        </div>
+
+                        {isProtectedAdmin && (
+                          <div style={{ fontSize: 11, color: "var(--muted)", padding: "6px 8px", border: "1px solid var(--line)", borderRadius: 8, background: "#fafafa", width: "fit-content" }}>
+                            Protected Admin: full access is locked.
+                          </div>
+                        )}
+                      </div>
                     ) : (
                       <button className="btn btn-soft"
                         style={{ fontSize: 11, padding: "5px 10px" }}
@@ -248,11 +332,121 @@ export default function UsersView({ token }) {
                     )}
                   </td>
                 </tr>
+                  );
+                })()
               ))}
             </tbody>
           </table>
         </div>
       </div>
+
+      {/* ── Custom Access Modal ────────────────────── */}
+      {expandedAccess && (() => {
+        const targetUser = users.find((x) => x.id === expandedAccess);
+        if (!targetUser) return null;
+        
+        return (
+          <div className="modal-overlay" onMouseDown={(e) => { if(e.target === e.currentTarget) setExpandedAccess(null); }}>
+            <div className="modal-box">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+                <div>
+                  <h2 style={{ fontSize: 20, marginBottom: 4 }}>Custom Access Control</h2>
+                  <p style={{ margin: 0, fontSize: 13, color: "var(--muted)" }}>
+                    Managing overrides for <strong style={{ color: "var(--ink)" }}>{targetUser.full_name || targetUser.email}</strong>
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setExpandedAccess(null)}
+                  style={{ background: "none", border: "none", cursor: "pointer", padding: 8, color: "var(--muted)" }}
+                >×</button>
+              </div>
+
+              <div style={{ display: "grid", gap: 16, border: "1px solid var(--line)", borderRadius: 10, padding: 16, background: "#fafafa" }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--muted)" }}>Permissions</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    {PERMISSION_OPTIONS.map((perm) => {
+                      const checked = (accessDrafts[targetUser.id]?.perms || []).includes(perm);
+                      return (
+                        <label key={perm} style={{ fontSize: 13, display: "flex", gap: 8, alignItems: "center", cursor: "pointer" }}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleAccessPermission(targetUser.id, perm)}
+                            style={{ width: 16, height: 16, cursor: "pointer" }}
+                          />
+                          {fmtN(perm)}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--muted)" }}>Expiration (Optional)</div>
+                  <input
+                    type="datetime-local"
+                    className="input-pill"
+                    style={{ background: "#fff", maxWidth: 220 }}
+                    value={accessDrafts[targetUser.id]?.expires_at || ""}
+                    onChange={(e) => {
+                      setAccessDrafts((prev) => ({
+                        ...prev,
+                        [targetUser.id]: {
+                          ...(prev[targetUser.id] || { perms: [], expires_at: "" }),
+                          expires_at: e.target.value,
+                        },
+                      }));
+                    }}
+                  />
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+                    Leave blank for permanent access.
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap", borderTop: "1px solid var(--line)", paddingTop: 16 }}>
+                  <button type="button" className="btn btn-soft"
+                    onClick={() => setAccessDrafts((prev) => ({
+                      ...prev,
+                      [targetUser.id]: { ...(prev[targetUser.id] || {}), perms: PERMISSION_OPTIONS },
+                    }))}
+                  >Full Access</button>
+
+                  <button type="button" className="btn btn-soft"
+                    onClick={() => setAccessDrafts((prev) => ({
+                      ...prev,
+                      [targetUser.id]: { ...(prev[targetUser.id] || {}), perms: ["update_records", "read_records"] },
+                    }))}
+                  >Update Only</button>
+
+                  <button type="button" className="btn btn-soft"
+                    onClick={() => setAccessDrafts((prev) => ({
+                      ...prev,
+                      [targetUser.id]: { ...(prev[targetUser.id] || {}), perms: ["delete_records", "read_records"] },
+                    }))}
+                  >Delete Only</button>
+
+                  <button type="button" className="btn btn-soft" style={{ marginLeft: "auto", color: "var(--danger)" }}
+                    onClick={() => setAccessDrafts((prev) => ({
+                      ...prev,
+                      [targetUser.id]: { ...(prev[targetUser.id] || {}), perms: [] },
+                    }))}
+                  >Clear All</button>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 24 }}>
+                <button type="button" className="btn btn-soft" onClick={() => setExpandedAccess(null)}>Cancel</button>
+                <button type="button" className="btn btn-primary" onClick={async () => {
+                  await handleSaveAccess(targetUser);
+                  setExpandedAccess(null); // auto close on save
+                }}>Save Overrides</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

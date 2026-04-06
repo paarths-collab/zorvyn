@@ -8,5 +8,6 @@ python-multipart
 python-dotenv
 alembic
 pydantic-settings
+psycopg2-binary
 pytest
 httpx

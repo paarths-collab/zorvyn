@@ -18,6 +18,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def normalize_sqlite_path(self):
+        # Render Postgres URLs often use postgres:// which SQLAlchemy does not accept.
+        if self.DATABASE_URL.startswith("postgres://"):
+            self.DATABASE_URL = self.DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
         # Make sqlite relative paths stable regardless of process CWD.
         if self.DATABASE_URL.startswith("sqlite:///./"):
             project_root = Path(__file__).resolve().parents[2]

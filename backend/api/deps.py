@@ -7,8 +7,10 @@ from backend.core.config import settings
 from backend.db.session import get_db
 from backend.models.user import UserRole
 from backend.schemas.user import TokenPayload
-from backend.core.permissions import Permission, has_permission
+from backend.core.permissions import Permission, has_permission_for_user
 from backend.core.errors import AuthenticationError, PermissionDeniedError
+from backend.services.user import get_user_by_id
+from sqlalchemy.orm import Session
 
 reusable_oauth2 = OAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_STR}/auth/login"
@@ -51,7 +53,18 @@ class PermissionChecker:
     def __init__(self, permission: Permission):
         self.permission = permission
 
-    def __call__(self, user: TokenPayload = Depends(get_current_active_user)):
-        if not has_permission(user.role, self.permission):
+    def __call__(self, user: TokenPayload = Depends(get_current_active_user), db: Session = Depends(get_db)):
+        db_user = get_user_by_id(db, user.id)
+        if not db_user:
+            raise AuthenticationError("User not found")
+
+        has_perm = has_permission_for_user(
+            db_user.role,
+            self.permission,
+            permission_overrides=db_user.permission_overrides,
+            permission_expires_at=db_user.permission_expires_at,
+        )
+
+        if not has_perm:
             raise PermissionDeniedError("The user doesn't have enough privileges")
         return user

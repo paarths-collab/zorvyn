@@ -4,6 +4,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from backend.core.security import verify_password, get_password_hash
 from backend.core.errors import AppError
 from backend.models.user import User, UserRole
+from backend.core.permissions import Permission
 from backend.schemas.user import UserCreate, UserUpdate
 
 def get_user_by_email(db: Session, email: str) -> Optional[User]:
@@ -55,8 +56,52 @@ def create_user(db: Session, user_in: UserCreate, role: UserRole) -> User:
 def update_user(db: Session, db_user: User, user_in: UserUpdate) -> User:
     try:
         update_data = user_in.model_dump(exclude_unset=True)
+        current_role = db_user.role
+
+        # Original admins must keep full admin access.
+        is_protected_admin = current_role == UserRole.ADMIN and not bool(db_user.is_promoted_admin)
+        if is_protected_admin:
+            if "role" in update_data and update_data["role"] != UserRole.ADMIN:
+                raise AppError(
+                    "This admin account is protected and cannot be demoted.",
+                    400,
+                    "PROTECTED_ADMIN_ROLE_CHANGE_BLOCKED",
+                )
+            if "permission_overrides" in update_data or "permission_expires_at" in update_data:
+                raise AppError(
+                    "This admin account is protected and cannot have restricted custom permissions.",
+                    400,
+                    "PROTECTED_ADMIN_PERMISSION_CHANGE_BLOCKED",
+                )
+
         if "password" in update_data and update_data["password"]:
             update_data["hashed_password"] = get_password_hash(update_data.pop("password"))
+
+        if "permission_overrides" in update_data:
+            overrides = update_data["permission_overrides"]
+            if overrides is None:
+                update_data["permission_overrides"] = None
+            else:
+                valid_permissions: list[str] = []
+                for item in overrides:
+                    try:
+                        valid_permissions.append(Permission(item).value)
+                    except ValueError as exc:
+                        raise AppError(
+                            f"Invalid permission '{item}'. Allowed: {[p.value for p in Permission]}",
+                            400,
+                            "INVALID_PERMISSION_OVERRIDE",
+                        ) from exc
+                update_data["permission_overrides"] = ",".join(sorted(set(valid_permissions)))
+
+        # Mark promoted admins and keep marker aligned with role changes.
+        if "role" in update_data:
+            next_role = update_data["role"]
+            if current_role != UserRole.ADMIN and next_role == UserRole.ADMIN:
+                update_data["is_promoted_admin"] = True
+            elif current_role == UserRole.ADMIN and next_role != UserRole.ADMIN:
+                update_data["is_promoted_admin"] = False
+
         for field, value in update_data.items():
             setattr(db_user, field, value)
         db.add(db_user)
